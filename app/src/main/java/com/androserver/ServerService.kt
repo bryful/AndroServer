@@ -20,6 +20,8 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
 
 class ServerService : Service() {
 
@@ -36,7 +38,8 @@ class ServerService : Service() {
         const val NOTIFICATION_CHANNEL_ID = "andro_server_channel"
         const val NOTIFICATION_ID = 1001
 
-        private val executor = Executors.newSingleThreadExecutor()
+        private val executor = Executors.newSingleThreadScheduledExecutor()
+        private const val RECOVERY_INTERVAL_SECONDS = 5L
         private val serverState = MutableLiveData<ConnectionInfo?>()
         val connection: LiveData<ConnectionInfo?> = serverState
         private val startupError = MutableLiveData<Int?>()
@@ -145,16 +148,11 @@ class ServerService : Service() {
             val startup = runCatching {
                 val host = if (waitForLan) awaitLanAddress(attempt) else NetworkUtils.getLocalIpAddress()
                 val address = host ?: if (waitForLan) throw LanUnavailable() else "127.0.0.1"
-                val scheme = if (certificate == null) "http" else "https"
-                val defaultPort = if (certificate == null) 80 else 443
-                val url = if (port == defaultPort) "$scheme://$address" else "$scheme://$address:$port"
-                if (certificate == null) {
-                    check(NativeLib.startServer(port, paths, address, authorization))
-                } else {
+                val context = certificate?.let {
                     val secret = certificatePassword.toCharArray()
-                    val context = try {
+                    try {
                         val input = try {
-                            contentResolver.openInputStream(certificate)
+                            contentResolver.openInputStream(it)
                                 ?: throw java.io.FileNotFoundException()
                         } catch (e: Exception) {
                             throw UnreadableServerCertificate(e)
@@ -163,9 +161,10 @@ class ServerService : Service() {
                     } finally {
                         secret.fill('\u0000')
                     }
-                    check(NativeLib.startServer(0, paths, "127.0.0.1", authorization, url))
-                    httpsServer = HttpsServer.start(context, address, port, NativeLib.getServerPort())
                 }
+                val listen = { ip: String -> startListeners(ip, port, paths, authorization, context) }
+                val url = listen(address)
+                monitorListeners(attempt, username, address, listen)
                 url
             }
             if (startup.isFailure) stopListeners()
@@ -173,9 +172,7 @@ class ServerService : Service() {
                 if (attempt == generation) {
                     if (startup.isSuccess) {
                         val url = startup.getOrThrow()
-                        serverState.value = ConnectionInfo(url, username)
-                        getSystemService(NotificationManager::class.java)
-                            .notify(NOTIFICATION_ID, buildNotification(url, true))
+                        publishConnection(url, username)
                     } else {
                         val error = startup.exceptionOrNull()
                         val message = when (error) {
@@ -201,6 +198,62 @@ class ServerService : Service() {
                 }
             }
         }
+    }
+
+    private fun startListeners(
+        address: String,
+        port: Int,
+        paths: Array<ByteArray>,
+        authorization: String,
+        context: SSLContext?
+    ): String {
+        val scheme = if (context == null) "http" else "https"
+        val defaultPort = if (context == null) 80 else 443
+        val url = if (port == defaultPort) "$scheme://$address" else "$scheme://$address:$port"
+        if (context == null) {
+            check(NativeLib.startServer(port, paths, address, authorization))
+        } else {
+            check(NativeLib.startServer(0, paths, "127.0.0.1", authorization, url))
+            httpsServer = HttpsServer.start(context, address, port, NativeLib.getServerPort())
+        }
+        return url
+    }
+
+    private fun monitorListeners(
+        attempt: Int,
+        username: String,
+        boundAddress: String,
+        listen: (String) -> String
+    ) {
+        executor.schedule({
+            if (attempt != generation) return@schedule
+
+            val address = NetworkUtils.getLocalIpAddress() ?: boundAddress
+            val running = NativeLib.isServerRunning() && httpsServer?.isListening != false
+            var nextAddress = boundAddress
+            if (!running || address != boundAddress) {
+                stopListeners()
+                try {
+                    val url = listen(address)
+                    nextAddress = address
+                    mainHandler.post {
+                        if (attempt == generation) publishConnection(url, username)
+                    }
+                } catch (e: Exception) {
+                    stopListeners()
+                    android.util.Log.w("AndroServer", "Server recovery failed: ${e.javaClass.simpleName}")
+                }
+            } else {
+                httpsServer?.closeIdleConnections()
+            }
+            monitorListeners(attempt, username, nextAddress, listen)
+        }, RECOVERY_INTERVAL_SECONDS, TimeUnit.SECONDS)
+    }
+
+    private fun publishConnection(url: String, username: String) {
+        serverState.value = ConnectionInfo(url, username)
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildNotification(url, true))
     }
 
     private fun stopServerService() {

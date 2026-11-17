@@ -23,7 +23,7 @@ Android で APK を開き、画面の案内に従ってインストールして�
 
 ## 署名の確認
 
-- APK の SHA-256：`614062dad960ca0a172f99ca8261a15ab225c7e56b77046c1bf151500db47c3f`
+- APK の SHA-256：`7e18b2dc08b01d74fda7deea68140d92d822ac6a5147c2909ced5e670c01d59c`
 - 署名証明書の SHA-256：`0393c2b4651dcfe15ad81c2e25c64c458faabafbcb6605839b6ecf6f0f4e2747`
 
 Android SDK の `apksigner` で署名と公開証明書の SHA-256 を確認できます。

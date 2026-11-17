@@ -12,6 +12,8 @@ import java.security.cert.CertificateExpiredException
 import java.security.cert.CertificateNotYetValidException
 import java.security.cert.X509Certificate
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -26,8 +28,32 @@ internal class HttpsServer private constructor(
     enum class Reason { WRONG_PASSWORD, INVALID_FILE, MISSING_KEY, EXPIRED, NOT_YET_VALID }
 
     private val workers = Executors.newCachedThreadPool()
-    private val clients = mutableSetOf<SSLSocket>()
+    private val clients = mutableSetOf<RelayConnection>()
     private var closed = false
+    private lateinit var acceptTask: Future<*>
+    val isListening: Boolean get() = !listener.isClosed && !acceptTask.isDone
+
+    private class RelayConnection(val client: SSLSocket) {
+        val backend = Socket()
+        @Volatile var lastActivity = System.nanoTime()
+            private set
+
+        fun relay(input: InputStream, output: java.io.OutputStream) {
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val size = input.read(buffer)
+                if (size < 0) return
+                lastActivity = System.nanoTime()
+                output.write(buffer, 0, size)
+                lastActivity = System.nanoTime()
+            }
+        }
+
+        fun close() {
+            closeSocket(backend)
+            closeSocket(client)
+        }
+    }
 
     private fun acceptConnections() {
         while (!listener.isClosed) {
@@ -40,39 +66,48 @@ internal class HttpsServer private constructor(
                 if (closed || clients.size >= 16) {
                     closeSocket(client)
                 } else {
-                    clients.add(client)
-                    workers.execute { relay(client) }
+                    val connection = RelayConnection(client)
+                    clients.add(connection)
+                    workers.execute { relay(connection) }
                 }
             }
         }
     }
 
-    private fun relay(client: SSLSocket) {
+    private fun relay(connection: RelayConnection) {
+        val client = connection.client
+        val backend = connection.backend
         try {
-            Socket().use { backend ->
-                client.soTimeout = 15_000
-                client.startHandshake()
-                client.soTimeout = 0
-                backend.connect(InetSocketAddress("127.0.0.1", backendPort), 5_000)
-                workers.execute {
-                    try {
-                        client.getInputStream().copyTo(backend.getOutputStream(), BUFFER_SIZE)
-                        backend.shutdownOutput()
-                    } catch (_: IOException) {
-                        closeSocket(backend)
-                    }
+            client.soTimeout = 15_000
+            client.startHandshake()
+            client.soTimeout = 0
+            backend.connect(InetSocketAddress("127.0.0.1", backendPort), 5_000)
+            workers.execute {
+                try {
+                    connection.relay(client.getInputStream(), backend.getOutputStream())
+                    backend.shutdownOutput()
+                } catch (_: IOException) {
+                    closeSocket(backend)
                 }
-                backend.getInputStream().copyTo(client.getOutputStream(), BUFFER_SIZE)
-                client.getOutputStream().flush()
             }
+            connection.relay(backend.getInputStream(), client.getOutputStream())
+            client.getOutputStream().flush()
         } catch (_: IOException) {
             // An aborted download or TLS handshake affects only this connection.
         } catch (_: java.util.concurrent.RejectedExecutionException) {
             // The server was stopped while establishing the connection.
         } finally {
-            closeSocket(client)
-            synchronized(clients) { clients.remove(client) }
+            connection.close()
+            synchronized(clients) { clients.remove(connection) }
         }
+    }
+
+    fun closeIdleConnections() {
+        val now = System.nanoTime()
+        val idle = synchronized(clients) {
+            clients.filter { now - it.lastActivity >= IDLE_TIMEOUT_NANOS }
+        }
+        idle.forEach { it.close() }
     }
 
     override fun close() {
@@ -82,11 +117,12 @@ internal class HttpsServer private constructor(
             clients.toList()
         }
         runCatching { listener.close() }
-        pending.forEach(::closeSocket)
+        pending.forEach { it.close() }
     }
 
     companion object {
         private const val BUFFER_SIZE = 128 * 1024
+        private val IDLE_TIMEOUT_NANOS = TimeUnit.MINUTES.toNanos(5)
 
         fun loadIdentity(input: InputStream, password: CharArray): SSLContext {
             val keys = KeyStore.getInstance("PKCS12")
@@ -132,7 +168,9 @@ internal class HttpsServer private constructor(
                 }.toTypedArray()
                 socket.reuseAddress = true
                 socket.bind(InetSocketAddress(host, port))
-                return HttpsServer(socket, backendPort).apply { workers.execute { acceptConnections() } }
+                return HttpsServer(socket, backendPort).apply {
+                    acceptTask = workers.submit { acceptConnections() }
+                }
             } catch (e: Exception) {
                 runCatching { socket.close() }
                 throw e

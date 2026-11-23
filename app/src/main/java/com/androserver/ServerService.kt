@@ -86,7 +86,8 @@ class ServerService : Service() {
                 } else {
                     startServerService(
                         saved.port, saved.roots, saved.username, saved.password,
-                        saved.certificate, saved.certificatePassword, waitForLan = true
+                        saved.certificate, saved.certificatePassword,
+                        waitForLan = flags and START_FLAG_REDELIVERY == 0
                     )
                 }
             }
@@ -94,7 +95,14 @@ class ServerService : Service() {
                 stopServerService()
             }
         }
-        return START_NOT_STICKY
+        // Restore the start intent after system process termination, including its
+        // in-memory settings when saving settings was disabled. Explicit stops
+        // and rejected starts must not request another restart.
+        return if (active && intent?.action != ACTION_STOP) {
+            START_REDELIVER_INTENT
+        } else {
+            START_NOT_STICKY
+        }
     }
 
     private fun startServerService(

@@ -4,8 +4,15 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Keep the server and transfer symbol inside the adaptive icon safe zone. -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M57,30 L39,56 L51,56 L47,78 L69,52 L57,52 Z" />
+        android:fillColor="#EAF7FA"
+        android:pathData="M35,33 H66 Q70,33 70,37 V43 Q70,47 66,47 H35 Q31,47 31,43 V37 Q31,33 35,33 Z M35,51 H59 V65 H35 Q31,65 31,61 V55 Q31,51 35,51 Z M35,69 H53 V75 H35 Q31,75 31,71 V69 Z" />
+    <path
+        android:fillColor="#102A36"
+        android:pathData="M37,38 H41 V42 H37 Z M37,56 H41 V60 H37 Z M47,39 H63 V41 H47 Z M47,57 H54 V59 H47 Z" />
+    <path
+        android:fillColor="#46E6B0"
+        android:pathData="M70,49 L56,65 H64 L60,79 L78,59 H69 L74,49 Z" />
 </vector>
 

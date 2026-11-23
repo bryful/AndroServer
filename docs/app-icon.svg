@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="432" height="432" viewBox="0 0 108 108">
+  <title>AndroServer app icon</title>
+  <rect width="108" height="108" rx="24" fill="#102A36"/>
+  <path fill="#EAF7FA" d="M35 33H66Q70 33 70 37V43Q70 47 66 47H35Q31 47 31 43V37Q31 33 35 33ZM35 51H59V65H35Q31 65 31 61V55Q31 51 35 51ZM35 69H53V75H35Q31 75 31 71V69Z"/>
+  <path fill="#102A36" d="M37 38H41V42H37ZM37 56H41V60H37ZM47 39H63V41H47ZM47 57H54V59H47Z"/>
+  <path fill="#46E6B0" d="M70 49 56 65H64L60 79 78 59H69L74 49Z"/>
+</svg>
